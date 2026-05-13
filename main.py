@@ -1,10 +1,23 @@
+import os
 from datetime import datetime
 
 import sqlite3
-from fastapi import FastAPI, HTTPException
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
+load_dotenv()
+mongo_url = os.getenv("MONGO_URL")
+print(f"Mongo URL: {mongo_url}")
+
 app = FastAPI()
+templates = Jinja2Templates(directory="templates")
+
+
+@app.get("/")
+def root(request: Request):
+    return templates.TemplateResponse(request, "index.html")
 
 
 @app.get("/posts")
