@@ -1,18 +1,26 @@
 import os
 from datetime import datetime
 
-import sqlite3
+from bson import ObjectId
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+from pymongo import MongoClient
 
 load_dotenv()
 mongo_url = os.getenv("MONGO_URL")
-print(f"Mongo URL: {mongo_url}")
+
+client = MongoClient(mongo_url)
+db = client["posts_db"]
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
+
+
+class Post(BaseModel):
+    title: str
+    comment: str
 
 
 @app.get("/")
@@ -22,73 +30,60 @@ def root(request: Request):
 
 @app.get("/posts")
 def get_posts():
-    conn = sqlite3.connect("posts.db")
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM post")
-    posts = [dict(row) for row in cursor.fetchall()]
-    conn.close()
+    posts = []
+    for doc in db.posts.find():
+        doc["id"] = str(doc.pop("_id"))
+        posts.append(doc)
     return posts
 
 
 @app.get("/posts/{post_id}")
-def get_post(post_id: int):
-    conn = sqlite3.connect("posts.db")
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM post WHERE id = ?", (post_id,))
-    post = cursor.fetchone()
-    conn.close()
-    if post is None:
-        raise HTTPException(status_code=400, detail={"error": "Post not found"})
-    return dict(post)
+def get_post(post_id: str):
+    try:
+        obj_id = ObjectId(post_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid post ID")
 
+    doc = db.posts.find_one({"_id": obj_id})
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Post not found")
 
-class Post(BaseModel):
-    title: str
-    comment: str
+    doc["id"] = str(doc.pop("_id"))
+    return doc
 
 
 @app.post("/posts")
 def create_post(post: Post):
     now = datetime.now().isoformat()
-    conn = sqlite3.connect("posts.db")
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO post (title, comment, createdAt, updatedAt) VALUES (?, ?, ?, ?)",
-        (post.title, post.comment, now, now),
-    )
-    conn.commit()
-    post_id = cursor.lastrowid
-    conn.close()
-    return {
-        "id": post_id,
+    doc = {
         "title": post.title,
         "comment": post.comment,
         "createdAt": now,
         "updatedAt": now,
     }
+    result = db.posts.insert_one(doc)
+    doc.pop("_id")
+    doc["id"] = str(result.inserted_id)
+    return doc
 
 
 @app.put("/posts/{post_id}")
-def update_post(post_id: int, post: Post):
-    now = datetime.now().isoformat()
-    conn = sqlite3.connect("posts.db")
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM post WHERE id = ?", (post_id,))
-    existing = cursor.fetchone()
+def update_post(post_id: str, post: Post):
+    try:
+        obj_id = ObjectId(post_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid post ID")
 
+    existing = db.posts.find_one({"_id": obj_id})
     if existing is None:
-        conn.close()
-        raise HTTPException(status_code=400, detail={"error": "Post not found"})
+        raise HTTPException(status_code=404, detail="Post not found")
 
-    cursor.execute(
-        "UPDATE post SET title = ?, comment = ?, updatedAt = ? WHERE id = ?",
-        (post.title, post.comment, now, post_id),
+    now = datetime.now().isoformat()
+    db.posts.update_one(
+        {"_id": obj_id},
+        {"$set": {"title": post.title, "comment": post.comment, "updatedAt": now}},
     )
-    conn.commit()
-    conn.close()
+
     return {
         "id": post_id,
         "title": post.title,
@@ -99,15 +94,14 @@ def update_post(post_id: int, post: Post):
 
 
 @app.delete("/posts/{post_id}")
-def delete_post(post_id: int):
-    conn = sqlite3.connect("posts.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM post WHERE id = ?", (post_id,))
-    existing = cursor.fetchone()
-    if existing is None:
-        conn.close()
-        raise HTTPException(status_code=400, detail={"error": "Post not found"})
-    cursor.execute("DELETE FROM post WHERE id = ?", (post_id,))
-    conn.commit()
-    conn.close()
+def delete_post(post_id: str):
+    try:
+        obj_id = ObjectId(post_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid post ID")
+
+    result = db.posts.delete_one({"_id": obj_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Post not found")
+
     return {"message": "Post deleted"}
